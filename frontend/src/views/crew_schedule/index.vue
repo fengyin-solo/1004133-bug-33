@@ -58,7 +58,9 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无地勤排班数据，可先登记地勤人员</td>
+          <td :colspan="columns.length + 2" class="empty-state">
+            {{ hasActiveFilters ? '暂无结果：当前筛选条件下没有匹配的地勤人员，已保留所选条件' : '暂无地勤排班数据，可先登记地勤人员' }}
+          </td>
         </tr>
       </tbody>
     </table>
@@ -91,12 +93,16 @@ const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+// 所属班组必须可筛：按班组过滤是排班页的常用入口。
+const filterFields = ["人员编号", "姓名", "岗位类别", "所属班组"]
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
+)
+const hasActiveFilters = computed(() =>
+  Object.values(filters.value).some((value) => String(value ?? '').trim() !== ''),
 )
 
 function resetFilters() {
@@ -114,7 +120,10 @@ function openCreate() {
 
 function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
+  // 当前选了班组就把选择带下去：动作只能落在本班组的记录上，跨班组改动会被拦截。
+  const team = String(filters.value['所属班组'] ?? '').trim()
+  const scope = team ? { field: '所属班组', value: team } : undefined
+  const result = applyAction(meta.key, Number(row.id), action, scope)
   if (!result.ok) {
     errorMessage.value = result.message
     return

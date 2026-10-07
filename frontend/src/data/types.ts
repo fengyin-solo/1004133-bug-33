@@ -32,6 +32,12 @@ export type ActionResult = {
   message: string
 }
 
+/** 动作的作用域约束：带了它就只能动本范围内的记录，跨班组改动会被拦截。 */
+export type ActionScope = {
+  field: string
+  value: string
+}
+
 export type OverviewResult = {
   cards: { label: string; value: number }[]
   modules: { name: string; created: number; pending: number; abnormal: number }[]

@@ -1,9 +1,26 @@
 import { MODULE_BY_KEY } from '@/data/modules'
 import { allRows, listRows, resetRows, saveRows } from '@/data/local-store'
-import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
+import type {
+  ActionResult,
+  ActionScope,
+  EntryRow,
+  ModuleMeta,
+  OverviewResult,
+  PageResult,
+} from '@/data/types'
 
 // 会写进数据的「往回走」动作：命中就把这条记录标成异常态，看板上能一眼看出来。
 const NEGATIVE_ACTIONS = ['撤销', '作废', '拒绝', '驳回', '停用', '忽略', '下线', '回滚']
+
+// 待办口径：状态机里排在前两位的算待办，流转到后面的状态就退出待办清单。
+// 与 seed 数据的 pending 口径一致，概览页的「待处理」才不会虚高。
+const PENDING_STATUS_COUNT = 2
+
+// 统一定位顺序：列表、动作、导出都按编号升序这一份顺序走，
+// 过滤之后从列表入口定位，结果不会再落到别的记录上。
+function byIdAsc(a: EntryRow, b: EntryRow): number {
+  return Number(a.id) - Number(b.id)
+}
 
 export function moduleMeta(key: string): ModuleMeta {
   const meta = MODULE_BY_KEY.get(key)
@@ -14,12 +31,17 @@ export function moduleMeta(key: string): ModuleMeta {
 }
 
 export function filterRows(rows: EntryRow[], filters: Record<string, string>): EntryRow[] {
-  const pairs = Object.entries(filters).filter(([, value]) => value.trim() !== '')
+  const pairs = Object.entries(filters)
+    .map(([field, value]) => [field, value.trim()] as [string, string])
+    .filter(([, value]) => value !== '')
+  const ordered = [...rows].sort(byIdAsc)
   if (pairs.length === 0) {
-    return rows
+    return ordered
   }
-  return rows.filter((row) =>
-    pairs.every(([field, value]) => String(row[field] ?? '').includes(value.trim())),
+  // 精确匹配：值完全一致才算命中，缺字段（如缺班组归属）的记录自然落空，
+  // 不会像子串匹配那样把别的班组的记录带进来。
+  return ordered.filter((row) =>
+    pairs.every(([field, value]) => String(row[field] ?? '') === value),
   )
 }
 
@@ -28,26 +50,40 @@ export function listEntries(key: string, filters: Record<string, string> = {}): 
   return { items: matched, total: matched.length, page: 1, size: matched.length }
 }
 
-export function runAction(key: string, id: number, action: string): ActionResult {
+export function runAction(
+  key: string,
+  id: number,
+  action: string,
+  scope?: ActionScope,
+): ActionResult {
   const meta = moduleMeta(key)
   const target = meta.actionTargets[action]
   if (!target) {
     return { ok: false, message: `${meta.entity}没有登记「${action}」这个动作` }
   }
-  const rows = listRows(key)
+  // 与列表同一份顺序里按编号定位，过滤后的入口不会落到详情范围之外。
+  const rows = [...listRows(key)].sort(byIdAsc)
   const index = rows.findIndex((row) => Number(row.id) === id)
   if (index < 0) {
     return { ok: false, message: `没有找到编号为 ${id} 的${meta.entity}` }
   }
-  const current = String(rows[index].status)
+  const row = rows[index]
+  const scopeValue = scope?.value.trim() ?? ''
+  if (scope && scopeValue !== '' && String(row[scope.field] ?? '') !== scopeValue) {
+    return {
+      ok: false,
+      message: `已拦截跨班组改动：这条${meta.entity}的${scope.field}是「${String(row[scope.field] ?? '') || '空'}」，当前选择的是「${scopeValue}」`,
+    }
+  }
+  const current = String(row.status)
   if (current === target) {
+    // 重复提交只留一份：状态已经到位，后面的重复提交直接拒掉。
     return { ok: false, message: `${meta.entity}已经是「${target}」，不用重复操作` }
   }
-  const lastStatus = meta.statuses[meta.statuses.length - 1]
   const updated: EntryRow = {
-    ...rows[index],
+    ...row,
     status: target,
-    pending: target !== lastStatus,
+    pending: meta.statuses.indexOf(target) >= 0 && meta.statuses.indexOf(target) < PENDING_STATUS_COUNT,
     abnormal: NEGATIVE_ACTIONS.some((verb) => action.startsWith(verb)),
   }
   const next = [...rows]
@@ -65,7 +101,7 @@ export function exportEntries(key: string): { filename: string; content: string 
   const meta = moduleMeta(key)
   const header = ['编号', ...meta.fields, '当前状态']
   const lines = [header.join(',')]
-  for (const row of listRows(key)) {
+  for (const row of [...listRows(key)].sort(byIdAsc)) {
     lines.push([row.id, ...meta.fields.map((field) => row[field] ?? ''), row.status].join(','))
   }
   return { filename: `${meta.name}-清单.csv`, content: `\uFEFF${lines.join('\n')}` }
